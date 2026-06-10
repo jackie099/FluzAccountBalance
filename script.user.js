@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fluz Bank Balance
 // @namespace    fluz_balance
-// @version      2.2.6
+// @version      2.2.7
 // @description  Show Fluz Bank Balance in table and dropdown with account management and deposit presets
 // @author       GammaExpansion
 // @match        https://fluz.app/*
@@ -264,21 +264,54 @@
         }, 400);
     }
 
+    /*
+    * Fluz renders its dropdowns with CSS-module class names that are hashed at
+    * build time (e.g. "_options_1tb6i_322 _open_1tb6i_230"). The hash suffix
+    * changes whenever Fluz rebuilds, which previously broke account selection
+    * when the literal ".options"/".option" class names disappeared. To stay
+    * resilient we match on the stable, un-hashed prefix via [class*="..."] while
+    * still accepting the older literal class names for backward compatibility.
+    */
+    const OPEN_OPTIONS_SELECTOR = '.options.open, [class*="_options_"][class*="_open_"]';
+    const OPTIONS_CONTAINER_SELECTOR = '.options, [class*="_options_"]';
+    const OPEN_DROPDOWN_SELECTOR = '.dropdown.open, [class*="_dropdown_"][class*="_open_"]';
+    const OPTION_SELECTOR = '.option, [class*="_option_"], [role="menuitem"]';
+    const OPTION_LABEL_SELECTORS = [
+        '.content .label',
+        '[class*="_content_"] [class*="_label_"]',
+        '.label',
+        '[class*="_label_"]',
+        '[class*="_list-item-title"]',
+        '[class*="_title"]'
+    ];
+
+    /**
+    * Finds the open options list for a dropdown wrapper, handling both the flat
+    * funding-source structure (options container directly under the wrapper) and
+    * the nested category structure (options container inside an open dropdown).
+    * @param {Element} wrapper - The dropdown wrapper element.
+    * @returns {Element|null} - The open options container, or null if closed.
+    */
+    function getOpenOptionsContainer(wrapper) {
+        const openOptions = wrapper.querySelector(OPEN_OPTIONS_SELECTOR);
+        if (openOptions) return openOptions;
+
+        // Category dropdown: the open marker is on the dropdown, options nested inside.
+        const openDropdown = wrapper.querySelector(OPEN_DROPDOWN_SELECTOR);
+        if (openDropdown) {
+            return openDropdown.querySelector(OPTIONS_CONTAINER_SELECTOR) || openDropdown;
+        }
+
+        return null;
+    }
+
     /**
     * Gets label text from a dropdown option element.
     * @param {Element} option - The option element.
     * @returns {string} - The label text.
     */
     function getOptionLabelText(option) {
-        // Try multiple selectors for the label
-        const labelSelectors = [
-            '.content .label',
-            '.label',
-            '[class*="_list-item-title"]',
-            '[class*="_title"]'
-        ];
-
-        for (const selector of labelSelectors) {
+        for (const selector of OPTION_LABEL_SELECTORS) {
             const label = option.querySelector(selector);
             if (label && label.textContent.trim()) {
                 return label.textContent.trim();
@@ -289,28 +322,18 @@
 
     /**
     * Helper to select an option from a dropdown.
-    * Handles both funding source dropdowns (.options.open) and category dropdowns (.dropdown.open > .options.open)
+    * Handles both flat funding-source dropdowns and nested category dropdowns
+    * via getOpenOptionsContainer (resilient to Fluz's hashed CSS-module classes).
     * @param {Element} wrapper - The dropdown wrapper element.
     * @param {string} searchText - Text to match in the option label.
     * @param {boolean} partialMatch - Whether to use partial matching.
     */
     function selectDropdownOption(wrapper, searchText, partialMatch) {
         const selectMatchingOption = () => {
-            // Category dropdown structure: .dropdown.open > .options.open > .option
-            // Funding dropdown structure: .options.open > .option
-            // Try to find the options container in either structure
-            let openDropdown = wrapper.querySelector('.options.open');
-            if (!openDropdown) {
-                // Fallback: check if .dropdown.open contains .options
-                const dropdownOpen = wrapper.querySelector('.dropdown.open');
-                if (dropdownOpen) {
-                    openDropdown = dropdownOpen.querySelector('.options') || dropdownOpen;
-                }
-            }
+            const openDropdown = getOpenOptionsContainer(wrapper);
             if (!openDropdown) return false;
 
-            // Options have class .option and/or role="menuitem"
-            const options = openDropdown.querySelectorAll('.option, [role="menuitem"]');
+            const options = openDropdown.querySelectorAll(OPTION_SELECTOR);
 
             for (const option of options) {
                 const labelText = getOptionLabelText(option);
@@ -328,8 +351,7 @@
         };
 
         // Check if dropdown is already open
-        let existingDropdown = wrapper.querySelector('.options.open, .dropdown.open');
-        if (existingDropdown) {
+        if (getOpenOptionsContainer(wrapper)) {
             selectMatchingOption();
         } else {
             // Find the trigger element - can be _selection or an input button
@@ -845,13 +867,12 @@
 
         // Helper function to find and click matching option
         const selectMatchingOption = () => {
-            const openDropdown = fundingWrapper.querySelector('.options.open');
+            const openDropdown = getOpenOptionsContainer(fundingWrapper);
             if (!openDropdown) return false;
 
-            const options = openDropdown.querySelectorAll('.option');
+            const options = openDropdown.querySelectorAll(OPTION_SELECTOR);
             for (const option of options) {
-                const label = option.querySelector('.content .label');
-                if (label && label.textContent.trim() === accountName) {
+                if (getOptionLabelText(option) === accountName) {
                     option.click();
                     return true;
                 }
@@ -860,8 +881,7 @@
         };
 
         // Check if dropdown is already open
-        const existingDropdown = fundingWrapper.querySelector('.options.open');
-        if (existingDropdown) {
+        if (getOpenOptionsContainer(fundingWrapper)) {
             // Dropdown already open, select directly
             selectMatchingOption();
         } else {
